@@ -4,7 +4,6 @@ from io import BytesIO
 import base64
 
 import numpy as np
-import nsml
 from PIL import Image
 
 from dataloader import get_loader
@@ -24,9 +23,6 @@ def main(args, scope):
     D = Discriminator(args)
     trainer = Trainer(train_loader, G, D, args)
 
-    save, load, infer = get_bindings(trainer)
-    nsml.bind(save=save, load=load, infer=infer)
-
     if args.pause:
         nsml.paused(scope=scope)
 
@@ -36,31 +32,6 @@ def main(args, scope):
         trainer.train()
     elif args.mode == 'sample':
         trainer.sample()
-
-
-def get_bindings(trainer):
-    def save(filename, *args):
-        trainer.save(filename)
-
-    def load(filename, *args):
-        trainer.load(filename)
-
-    def infer(input):
-        result = trainer.infer(input)
-        # convert tensor to dataurl
-        data_url_list = [''] * input
-        for idx, sample in enumerate(result):
-            numpy_array = np.uint8(sample.cpu().numpy()*255)
-            image = Image.fromarray(np.transpose(numpy_array, axes=(1, 2, 0)), 'RGB')
-            temp_out = BytesIO()
-            image.save(temp_out, format='png')
-            byte_data = temp_out.getvalue()
-            data_url_list[idx] = u'data:image/{format};base64,{data}'.\
-                format(format='png',
-                       data=base64.b64encode(byte_data).decode('ascii'))
-        return data_url_list
-
-    return save, load, infer
 
 
 if __name__ == "__main__":
@@ -78,6 +49,7 @@ if __name__ == "__main__":
                         help="Dimension of latent vector")
 
     # Training settings
+    parser.add_argument('--load_step', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=int, default=2e-4)
@@ -95,9 +67,7 @@ if __name__ == "__main__":
     parser.add_argument('--sample_step', type=int, default=200)
     parser.add_argument('--model_save_step', type=int, default=1000)
     parser.add_argument('--verbose', action='store_true')
-
-    # nsml setting
-    parser.add_argument('--pause', type=int, default=0)
+    
 
     args = parser.parse_args()
     if not os.path.exists(args.dataset.lower()):

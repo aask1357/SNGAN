@@ -63,7 +63,7 @@ class Trainer:
 
             print("Epoch: %3d | Step: %8d | " % (self.epoch, self.step) +
                   " | ".join("{}: {:.5f}".format(k, v) for k, v in epoch_info.items()))
-            self.sample()
+            #self.sample()
             self.G_scheduler.step()
             self.D_scheduler.step()
 
@@ -121,7 +121,7 @@ class Trainer:
             # log
             if self.step % self.args.log_step == 0:
                 print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss), to_np(g_loss)))
-
+            # sample image
             if self.step % self.args.sample_step == 0:
                 samples = self.denorm(self.infer(self.nsamples))
                 self.logger.images_summary("samples_unfixed", samples, self.step)

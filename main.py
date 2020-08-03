@@ -6,7 +6,6 @@ import base64
 import numpy as np
 from PIL import Image
 
-from dataloader import get_loader
 from trainer import Trainer
 from discriminator import Discriminator
 from generator import Generator

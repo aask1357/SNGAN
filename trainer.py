@@ -29,11 +29,14 @@ class Trainer:
         self.nsamples = args.nsamples
         self.d_iter = args.d_iter
         self.g_iter = args.g_iter
+        self.g_losses = []
+        self.d_losses = []
 
         self.epoch = 0
         self.step = max(args.load_step, 0)
 
         self.logger = Logger(args.log_path)
+        self.model_path = args.model_save_path
 
         self.G_optimizer = torch.optim.Adam(G.parameters(), self.lr, betas=(0.0, 0.9))
         self.D_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, D.parameters()), self.lr, betas=(0.0, 0.9))
@@ -80,7 +83,7 @@ class Trainer:
         for i, (real_imgs, real_labels) in enumerate(self.train_loader):
             real_imgs, real_labels = to_var(real_imgs), to_var(real_labels)
             self.step += 1
-
+            d_loss_ = 0.0
             for _ in range(self.d_iter):
                 # Discriminator
                 # V(D) = E[logD(x)] + E[log(1-D(G(z)))]
@@ -98,11 +101,15 @@ class Trainer:
 
                 d_loss = d_loss_real + d_loss_fake
                 d_loss.backward()
+                d_loss_ += d_loss.item()
 
                 self.D_optimizer.step()
+            d_loss_ /= self.d_iter
+            self.d_losses.apppend(d_loss_)
 
             # Generator
             # V(G) = -E[log(D(G(z)))]
+            g_loss_ = 0.0
             for _ in range(self.g_iter):
                 self.G.zero_grad()
                 fake_imgs = self.G(z)
@@ -112,6 +119,9 @@ class Trainer:
                 g_loss.backward()
 
                 self.G_optimizer.step()
+                g_loss_ += g_loss.item()
+            g_loss_ /= self.g_iter
+            self.g_losses.append(g_loss_)
 
             if self.step % self.args.log_step == 0:
                 print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss), to_np(g_loss)))
@@ -148,10 +158,14 @@ class Trainer:
     def save(self, filename):
         torch.save(
             {'G': self.G.state_dict(), 'D': self.D.state_dict()},
-            os.path.join(self.args.model_save_path, filename)
+            os.path.join(self.model_path, filename)
         )
+        np.save(os.path.join(self.model_path, 'd_losses'),np.array(self.d_losses))
+        np.save(os.path.join(self.model_path, 'g_losses'),np.array(self.g_losses))
 
     def load(self, filename):
         ckpt = torch.load(os.path.join(self.args.model_save_path, filename))
         self.G.load_state_dict(ckpt['G'])
         self.D.load_state_dict(ckpt['D'])
+        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses'))
+        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses'))

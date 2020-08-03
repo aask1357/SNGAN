@@ -48,6 +48,7 @@ if __name__ == "__main__":
     parser.add_argument('--d_iter', type=int, default=5)
 
     # Misc
+    parser.add_argument('--delete_old', action='store_true')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample'])
     parser.add_argument('--log_path', type=str, default='./cifar10/logs')
     parser.add_argument('--model_save_path', type=str, default='./cifar10/models')

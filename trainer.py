@@ -27,7 +27,7 @@ class Trainer:
         self.g_iter = args.g_iter
 
         self.epoch = 0
-        self.step = 0
+        self.step = max(int(args.load_step), 0)
 
         self.logger = Logger(args.log_path)
 
@@ -47,6 +47,8 @@ class Trainer:
         self.fixed_z = to_var(torch.randn(self.nsamples, self.G.z_dim))
 
     def train(self):
+        if self.step > 0:
+            self.load(f"{self.step:0>6}")
         self.sample()
         for self.epoch in range(1, self.args.epochs+1):
             epoch_info = self.train_epoch()
@@ -58,6 +60,12 @@ class Trainer:
             self.sample()
             self.G_scheduler.step()
             self.D_scheduler.step()
+            # save
+            self.save(f"{self.step:0>6}")
+            if self.args.delete_old:
+                if self.epoch > 1:
+                    os.remove(f"{self.args.model_save_path}/{old_step:0>6}")
+                old_step = self.step
 
         if self.args.inception_score:
             score_mean, score_std = inception_score(GenDataset(self.G, 50000), torch.cuda.is_available(), self.batch_size, True)
@@ -104,14 +112,14 @@ class Trainer:
                 self.G_optimizer.step()
 
             if self.step % self.args.log_step == 0:
-                print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss)[0], to_np(g_loss)[0]))
+                print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss), to_np(g_loss)))
 
             if self.step % self.args.sample_step == 0:
                 samples = self.denorm(self.infer(self.nsamples))
                 self.logger.images_summary("samples_unfixed", samples, self.step)
 
-        return {'d_loss_real': to_np(d_loss_real)[0], 'd_loss_fake': to_np(d_loss_fake)[0],
-                'd_loss': to_np(d_loss)[0], 'g_loss': to_np(g_loss)[0]}
+        return {'d_loss_real': to_np(d_loss_real), 'd_loss_fake': to_np(d_loss_fake),
+                'd_loss': to_np(d_loss), 'g_loss': to_np(g_loss)}
 
     def sample(self):
         self.G.eval()

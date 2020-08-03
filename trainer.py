@@ -34,6 +34,7 @@ class Trainer:
 
         self.epoch = 0
         self.step = max(args.load_step, 0)
+        self.old_step = self.step
 
         self.logger = Logger(args.log_path)
         self.model_path = args.model_save_path
@@ -65,12 +66,6 @@ class Trainer:
             self.sample()
             self.G_scheduler.step()
             self.D_scheduler.step()
-            # save
-            self.save(f"{self.step:0>6}")
-            if self.args.delete_old:
-                if self.epoch > 1:
-                    os.remove(f"{self.args.model_save_path}/{old_step:0>6}")
-                old_step = self.step
 
         if self.args.inception_score:
             score_mean, score_std = inception_score(GenDataset(self.G, 50000), torch.cuda.is_available(), self.batch_size, True)
@@ -123,13 +118,21 @@ class Trainer:
             g_loss_ /= self.g_iter
             self.g_losses.append(g_loss_)
 
+            # log
             if self.step % self.args.log_step == 0:
                 print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss), to_np(g_loss)))
 
             if self.step % self.args.sample_step == 0:
                 samples = self.denorm(self.infer(self.nsamples))
                 self.logger.images_summary("samples_unfixed", samples, self.step)
-
+                        
+            # save
+            if self.step % self.args.save_step == 0 or i == len(self.train_loader) - 1:
+                self.save(f"{self.step:0>6}")
+                if self.args.delete_old and self.old_step > 0:
+                    os.remove(f"{self.model_path}/{self.old_step:0>6}")
+                    self.old_step = self.step
+            
         return {'d_loss_real': to_np(d_loss_real), 'd_loss_fake': to_np(d_loss_fake),
                 'd_loss': to_np(d_loss), 'g_loss': to_np(g_loss)}
 
@@ -156,6 +159,8 @@ class Trainer:
         print_network(self.D)
 
     def save(self, filename):
+        if not os.path.exists(self.model_path):
+            os.makedirs(self.model_path)
         torch.save(
             {'G': self.G.state_dict(), 'D': self.D.state_dict()},
             os.path.join(self.model_path, filename)
@@ -167,5 +172,5 @@ class Trainer:
         ckpt = torch.load(os.path.join(self.args.model_save_path, filename))
         self.G.load_state_dict(ckpt['G'])
         self.D.load_state_dict(ckpt['D'])
-        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses')))
-        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses')))
+        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses.npy')))
+        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses.npy')))

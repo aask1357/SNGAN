@@ -14,17 +14,9 @@ from logger import Logger
 
 
 def main(args, scope):
-    train_loader, _ = get_loader(
-        args.dataset,
-        batch_size=args.batch_size,
-        num_workers=args.workers
-    )
     G = Generator(args)
     D = Discriminator(args)
-    trainer = Trainer(train_loader, G, D, args)
-
-    if args.pause:
-        nsml.paused(scope=scope)
+    trainer = Trainer(G, D, args)
 
     if args.mode == 'train':
         if args.verbose:

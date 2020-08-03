@@ -16,7 +16,11 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 class Trainer:
     def __init__(self, train_loader, G, D, args):
-        self.train_loader = train_loader
+        self.train_loader, self.test_loader = get_loader(
+            args.dataset,
+            batch_size=args.batch_size,
+            num_workers=args.workers
+        )
         self.G = G
         self.D = D
         self.args = args
@@ -27,7 +31,7 @@ class Trainer:
         self.g_iter = args.g_iter
 
         self.epoch = 0
-        self.step = max(int(args.load_step), 0)
+        self.step = max(args.load_step, 0)
 
         self.logger = Logger(args.log_path)
 

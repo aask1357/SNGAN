@@ -56,8 +56,6 @@ class Trainer:
         self.sample()
         for self.epoch in range(1, self.args.epochs+1):
             epoch_info = self.train_epoch()
-            for k, v in epoch_info.items():
-                self.logger.scalar_summary("loss__"+k, float(v), self.epoch, locals())
 
             print("Epoch: %3d | Step: %8d | " % (self.epoch, self.step) +
                   " | ".join("{}: {:.5f}".format(k, v) for k, v in epoch_info.items()))

@@ -105,7 +105,7 @@ class Trainer:
 
                 self.D_optimizer.step()
             d_loss_ /= self.d_iter
-            self.d_losses.apppend(d_loss_)
+            self.d_losses.append(d_loss_)
 
             # Generator
             # V(G) = -E[log(D(G(z)))]
@@ -167,5 +167,5 @@ class Trainer:
         ckpt = torch.load(os.path.join(self.args.model_save_path, filename))
         self.G.load_state_dict(ckpt['G'])
         self.D.load_state_dict(ckpt['D'])
-        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses'))
-        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses'))
+        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses')))
+        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses')))

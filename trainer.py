@@ -7,7 +7,7 @@ from torch.autograd import Variable
 import torch.optim as optim
 import torchvision.transforms as transforms
 
-from dataloader import GenDataset
+from dataloader import get_loader, GenDataset
 from logger import Logger
 from utils import *
 
@@ -15,8 +15,8 @@ from utils import *
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 class Trainer:
-    def __init__(self, train_loader, G, D, args):
-        self.train_loader, self.test_loader = get_loader(
+    def __init__(self, G, D, args):
+        self.train_loader, _ = get_loader(
             args.dataset,
             batch_size=args.batch_size,
             num_workers=args.workers
@@ -73,8 +73,8 @@ class Trainer:
 
         if self.args.inception_score:
             score_mean, score_std = inception_score(GenDataset(self.G, 50000), torch.cuda.is_available(), self.batch_size, True)
-            print("Inception score at epoch {} with 50000 generated samples - Mean: {:.3f}, Std: {:.3f}".format(self.epoch, score_mean, score_std))
-
+            print("Inception score at epoch {} with 50000 generated samples - Mean: {:.3f}, Std: {:.3f}".format(self.epoch, score_mean, score_std))            
+    
     def train_epoch(self):
         self.G.train()
         self.D.train()

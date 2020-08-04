@@ -17,7 +17,8 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 class Trainer:
     def __init__(self, G, D, args):
         self.train_loader, _ = get_loader(
-            args.dataset,
+            dataset=args.dataset,
+            root=args.data_path,
             batch_size=args.batch_size,
             num_workers=args.workers
         )

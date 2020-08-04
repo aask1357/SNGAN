@@ -49,17 +49,17 @@ if __name__ == "__main__":
 
     # Misc
     parser.add_argument('--delete_old', action='store_true')
-    parser.add_argument('--save_step', type=int, default=100)
     parser.add_argument('--data_path', type=str, default='/home/ash-arch/Documents/datasets/cifar10')
     parser.add_argument('--log_path', type=str, default='./cifar10/logs')
-    parser.add_argument('--model_save_path', type=str, default='./cifar10/models')
+    parser.add_argument('--model_path', type=str, default='./cifar10/models')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample'])
     parser.add_argument('--nsamples', type=int, default=64)
     parser.add_argument('--inception_score', action='store_true')
 
-    parser.add_argument('--log_step', type=int, default=20)
+    parser.add_argument('--log_step', type=int, default=100)
     parser.add_argument('--sample_step', type=int, default=200)
-    parser.add_argument('--model_save_step', type=int, default=1000)
+    parser.add_argument('--save_step', type=int, default=200)
+    parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda', 'gpu'])
     parser.add_argument('--verbose', action='store_true')
     
 

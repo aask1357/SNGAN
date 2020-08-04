@@ -75,7 +75,9 @@ class GenDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         z = to_var(torch.randn(1, self.G.z_dim))
-        return self.transform(np.squeeze(to_np(self.denorm(self.G(z)).permute(0, 2, 3, 1))))
+        with torch.no_grad():
+            x = self.denorm(self.G(z)).permute(0, 2, 3, 1)
+        return self.transform(np.squeeze(to_np(x)))
 
     def __len__(self):
         return self.nsamples

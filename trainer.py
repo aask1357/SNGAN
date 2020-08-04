@@ -32,22 +32,24 @@ class Trainer:
         self.g_iter = args.g_iter
         self.g_losses = []
         self.d_losses = []
+        self.inception_scores = []
+        self.cuda = (args.device=='cuda' or args.device=='gpu') and torch.cuda.is_available()
 
         self.epoch = 0
         self.step = max(args.load_step, 0)
         self.old_step = self.step
 
         self.logger = Logger(args.log_path)
-        self.model_path = args.model_save_path
+        self.model_path = args.model_path
 
-        self.G_optimizer = torch.optim.Adam(G.parameters(), self.lr, betas=(0.0, 0.9))
-        self.D_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, D.parameters()), self.lr, betas=(0.0, 0.9))
+        self.G_optimizer = optim.Adam(G.parameters(), self.lr, betas=(0.0, 0.9))
+        self.D_optimizer = optim.Adam(filter(lambda p: p.requires_grad, D.parameters()), self.lr, betas=(0.0, 0.9))
         self.G_scheduler = optim.lr_scheduler.ExponentialLR(self.G_optimizer, gamma=0.99)
         self.D_scheduler = optim.lr_scheduler.ExponentialLR(self.D_optimizer, gamma=0.99)
 
         self.criterion = nn.BCEWithLogitsLoss()
 
-        if torch.cuda.is_available():
+        if self.cuda:
             self.G.cuda()
             self.D.cuda()
 
@@ -55,22 +57,35 @@ class Trainer:
         self.D.apply(init_params)
         self.fixed_z = to_var(torch.randn(self.nsamples, self.G.z_dim))
 
+        if args.inception_score:
+            self.inception_model = Inception(cuda=self.cuda)
+
     def train(self):
         if self.step > 0:
             self.load(f"{self.step:0>6}")
-        self.sample()
+        else:
+            self.sample()
         for self.epoch in range(1, self.args.epochs+1):
             epoch_info = self.train_epoch()
 
             print("Epoch: %3d | Step: %8d | " % (self.epoch, self.step) +
                   " | ".join("{}: {:.5f}".format(k, v) for k, v in epoch_info.items()))
-            #self.sample()
+            
             self.G_scheduler.step()
             self.D_scheduler.step()
 
-        if self.args.inception_score:
-            score_mean, score_std = inception_score(GenDataset(self.G, 50000), torch.cuda.is_available(), self.batch_size, True)
-            print("Inception score at epoch {} with 50000 generated samples - Mean: {:.3f}, Std: {:.3f}".format(self.epoch, score_mean, score_std))            
+            if self.args.inception_score:
+                self.G.eval()
+                score_mean, score_std = self.inception_model.inception_score(GenDataset(self.G, 50000), self.batch_size, True)
+                print("Inception score at epoch {} with 50000 generated samples - Mean: {:.3f}, Std: {:.3f}".format(self.epoch, score_mean, score_std))
+                self.inception_scores.append(np.array([score_mean, score_std]))
+                np.save(os.path.join(self.model_path, 'inception_scores'),np.array(self.inception_scores))
+                self.G.train()
+        # save
+        self.save(f"{self.step:0>6}")
+        if self.args.delete_old and self.old_step > 0:
+            os.remove(f"{self.model_path}/{self.old_step:0>6}")
+        self.old_step = self.step
     
     def train_epoch(self):
         self.G.train()
@@ -128,11 +143,11 @@ class Trainer:
                 self.logger.images_summary("samples_unfixed", samples, self.step)
                         
             # save
-            if self.step % self.args.save_step == 0 or i == len(self.train_loader) - 1:
+            if self.step % self.args.save_step == 0:
                 self.save(f"{self.step:0>6}")
                 if self.args.delete_old and self.old_step > 0:
                     os.remove(f"{self.model_path}/{self.old_step:0>6}")
-                    self.old_step = self.step
+                self.old_step = self.step
             
         return {'d_loss_real': to_np(d_loss_real), 'd_loss_fake': to_np(d_loss_fake),
                 'd_loss': to_np(d_loss), 'g_loss': to_np(g_loss)}
@@ -163,15 +178,26 @@ class Trainer:
         if not os.path.exists(self.model_path):
             os.makedirs(self.model_path)
         torch.save(
-            {'G': self.G.state_dict(), 'D': self.D.state_dict()},
+            {'G': self.G.state_dict(), 'D': self.D.state_dict(),
+             'G_optimizer' : self.G_optimizer.state_dict(),
+             'D_optimizer' : self.D_optimizer.state_dict(),
+             'G_scheduler' : self.G_scheduler.state_dict(),
+             'D_scheduler' : self.D_scheduler.state_dict()},
             os.path.join(self.model_path, filename)
         )
         np.save(os.path.join(self.model_path, 'd_losses'),np.array(self.d_losses))
         np.save(os.path.join(self.model_path, 'g_losses'),np.array(self.g_losses))
 
     def load(self, filename):
-        ckpt = torch.load(os.path.join(self.args.model_save_path, filename))
+        ckpt = torch.load(os.path.join(self.model_path, filename))
         self.G.load_state_dict(ckpt['G'])
         self.D.load_state_dict(ckpt['D'])
+        self.G_optimizer.load_state_dict(ckpt['G_optimizer'])
+        self.D_optimizer.load_state_dict(ckpt['D_optimizer'])
+        self.G_scheduler.load_state_dict(ckpt['G_scheduler'])
+        self.D_scheduler.load_state_dict(ckpt['D_scheduler'])
+
         self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses.npy')))
         self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses.npy')))
+        if self.args.inception_score:
+            self.inception_scores = list(np.load(os.path.join(self.model_path, 'inception_scores.npy')))

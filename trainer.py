@@ -10,8 +10,10 @@ import torchvision.transforms as transforms
 from dataloader import get_loader, GenDataset
 from logger import Logger
 from utils import *
+from tensorboardX import SummaryWriter
 
-
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 class Trainer:
@@ -29,57 +31,63 @@ class Trainer:
         self.batch_size = args.batch_size
         self.nsamples = args.nsamples
         self.d_iter = args.d_iter
-        self.g_iter = args.g_iter
-        self.g_losses = []
-        self.d_losses = []
-        self.inception_scores = []
-        self.cuda = (args.device=='cuda' or args.device=='gpu') and torch.cuda.is_available()
+
+        self.logger = Logger(args.log_path, args.sample_path)
+        self.writer = SummaryWriter(args.log_path)
+        self.model_path = args.model_path
+
+        cuda = (args.device=='cuda' or args.device=='gpu')
+        if cuda and not torch.cuda.is_available():
+            self.logger("cuda not available. run in cpu mode")
+            cuda = False
+        self.device = 'cuda' if cuda else 'cpu'
+        self.G.to(self.device)
+        self.D.to(self.device)
 
         self.epoch = 0
         self.step = max(args.load_step, 0)
         self.old_step = self.step
 
-        self.logger = Logger(args.log_path)
-        self.model_path = args.model_path
-
         self.G_optimizer = optim.Adam(G.parameters(), self.lr, betas=(0.0, 0.9))
         self.D_optimizer = optim.Adam(filter(lambda p: p.requires_grad, D.parameters()), self.lr, betas=(0.0, 0.9))
         self.G_scheduler = optim.lr_scheduler.ExponentialLR(self.G_optimizer, gamma=0.99)
         self.D_scheduler = optim.lr_scheduler.ExponentialLR(self.D_optimizer, gamma=0.99)
+        self.lr_scheduler = args.lr_scheduler
 
         self.criterion = nn.BCEWithLogitsLoss()
 
-        if self.cuda:
-            self.G.cuda()
-            self.D.cuda()
-
         self.G.apply(init_params)
         self.D.apply(init_params)
-        self.fixed_z = to_var(torch.randn(self.nsamples, self.G.z_dim))
+        self.fixed_z = torch.randn(self.nsamples, self.G.z_dim).to(self.device)
 
-        if args.inception_score:
-            self.inception_model = Inception(cuda=self.cuda)
+        if args.inception_step:
+            self.inception_model = Inception(cuda=cuda)
 
     def train(self):
         if self.step > 0:
             self.load(f"{self.step:0>6}")
         else:
             self.sample()
+        
+        self.G.train()
+        self.D.train()
         for self.epoch in range(1, self.args.epochs+1):
             epoch_info = self.train_epoch()
 
-            print("Epoch: %3d | Step: %8d | " % (self.epoch, self.step) +
-                  " | ".join("{}: {:.5f}".format(k, v) for k, v in epoch_info.items()))
+            self.logger(f"Epoch: {self.epoch:0>3} | Step: {self.step:0>8} | " +
+                         " | ".join(f"{k}: {v:.5f}" for k, v in epoch_info.items()))
             
-            self.G_scheduler.step()
-            self.D_scheduler.step()
+            if self.lr_scheduler:
+                self.G_scheduler.step()
+                self.D_scheduler.step()
 
-            if self.args.inception_score:
+            if self.args.inception_step and self.epoch % self.args.inception_step == 0:
                 self.G.eval()
+                self.logger('calculating inception score...')
                 score_mean, score_std = self.inception_model.inception_score(GenDataset(self.G, 50000), self.batch_size, True)
-                print("Inception score at epoch {} with 50000 generated samples - Mean: {:.3f}, Std: {:.3f}".format(self.epoch, score_mean, score_std))
-                self.inception_scores.append(np.array([score_mean, score_std]))
-                np.save(os.path.join(self.model_path, 'inception_scores'),np.array(self.inception_scores))
+                self.logger(f"Inception score at epoch {self.epoch} with 50000 generated samples - Mean: {score_mean:.3f}, Std: {score_std:.3f}")
+                self.writer.add_scalars("Inception Score", {"Mean" : score_mean}, self.step)
+                self.writer.add_scalars("Inception Score", {"Std" : score_std}, self.step)
                 self.G.train()
         # save
         self.save(f"{self.step:0>6}")
@@ -88,55 +96,49 @@ class Trainer:
         self.old_step = self.step
     
     def train_epoch(self):
-        self.G.train()
-        self.D.train()
-
+        loss_dict = {'d_loss_real': 0.0, 'd_loss_fake': 0.0, 'd_loss': 0.0, 'g_loss': 0.0}
         for i, (real_imgs, real_labels) in enumerate(self.train_loader):
-            real_imgs, real_labels = to_var(real_imgs), to_var(real_labels)
             self.step += 1
-            d_loss_ = 0.0
-            for _ in range(self.d_iter):
-                # Discriminator
-                # V(D) = E[logD(x)] + E[log(1-D(G(z)))]
-                self.D.zero_grad()
-                z = to_var(torch.randn(self.batch_size, self.G.z_dim))
+            real_imgs = real_imgs.to(self.device)
+            real_labels = torch.ones_like(real_labels, dtype=torch.float32, device=self.device)
+            fake_labels = torch.zeros_like(real_labels)
+            z = torch.randn(self.batch_size, self.G.z_dim, device=self.device)
 
-                real_labels.fill_(1)
-                real_labels = real_labels.float()
+            # Discriminator
+            # D = argmax{ E[logD(x)] + E[log(1-D(G(z)))] }
+            self.D.zero_grad()
 
-                d_loss_real = self.criterion(self.D(real_imgs), real_labels)
-                fake_imgs = self.G(z).detach()
-                fake_labels = real_labels.clone()
-                fake_labels.fill_(0)
-                d_loss_fake = self.criterion(self.D(fake_imgs), fake_labels)
+            d_loss_real = self.criterion(self.D(real_imgs), real_labels)
 
-                d_loss = d_loss_real + d_loss_fake
-                d_loss.backward()
-                d_loss_ += d_loss.item()
+            with torch.no_grad():
+                fake_imgs = self.G(z)
+            d_loss_fake = self.criterion(self.D(fake_imgs), fake_labels)
 
-                self.D_optimizer.step()
-            d_loss_ /= self.d_iter
-            self.d_losses.append(d_loss_)
+            d_loss = d_loss_real + d_loss_fake
+            d_loss.backward()
+            self.D_optimizer.step()
+            self.writer.add_scalars('D_loss', {"D" :d_loss.item()}, self.step)
+            self.writer.add_scalars('D_loss', {"D_real" : d_loss.item()}, self.step)
+            self.writer.add_scalars('D_loss', {"D_fake" : d_loss.item()}, self.step)
+            loss_dict['d_loss_real'] += d_loss_real.item()
+            loss_dict['d_loss_fake'] += d_loss_fake.item()
+            loss_dict['d_loss'] += d_loss.item()
 
             # Generator
-            # V(G) = -E[log(D(G(z)))]
-            g_loss_ = 0.0
-            for _ in range(self.g_iter):
+            # G = argmax{ E[log(D(G(z)))] } (instead of argmin{ E[log(1-D(G(z)))] })
+            if self.step % self.d_iter == 0:
                 self.G.zero_grad()
                 fake_imgs = self.G(z)
-                fake_labels.fill_(1)
 
-                g_loss = self.criterion(self.D(fake_imgs), fake_labels)
+                g_loss = self.criterion(self.D(fake_imgs), real_labels)
                 g_loss.backward()
-
                 self.G_optimizer.step()
-                g_loss_ += g_loss.item()
-            g_loss_ /= self.g_iter
-            self.g_losses.append(g_loss_)
+                self.writer.add_scalar('G_loss', g_loss.item(), self.step)
+                loss_dict['g_loss'] += g_loss.item()
 
             # log
             if self.step % self.args.log_step == 0:
-                print('step: {}, d_loss: {:.5f}, g_loss: {:.5f}'.format(self.step, to_np(d_loss), to_np(g_loss)))
+                self.logger(f'step: {self.step}, d_loss: {to_np(d_loss):.5f}, g_loss: {to_np(g_loss):.5f}')
             # sample image
             if self.step % self.args.sample_step == 0:
                 samples = self.denorm(self.infer(self.nsamples))
@@ -148,22 +150,29 @@ class Trainer:
                 if self.args.delete_old and self.old_step > 0:
                     os.remove(f"{self.model_path}/{self.old_step:0>6}")
                 self.old_step = self.step
-            
-        return {'d_loss_real': to_np(d_loss_real), 'd_loss_fake': to_np(d_loss_fake),
-                'd_loss': to_np(d_loss), 'g_loss': to_np(g_loss)}
+        loss_dict["d_loss_real"] /= len(self.train_loader)
+        loss_dict["d_loss_fake"] /= len(self.train_loader)
+        loss_dict["d_loss"] /= len(self.train_loader)
+        loss_dict["g_loss"] /= len(self.train_loader)//self.d_iter
+        return loss_dict
 
     def sample(self):
         self.G.eval()
         if not os.path.exists(self.args.log_path):
             os.makedirs(self.args.log_path)
 
-        samples = self.denorm(self.G(self.fixed_z))
+        with torch.no_grad():
+            samples = self.denorm(self.G(self.fixed_z))
         self.logger.images_summary("samples_fixed", samples, self.step)
+        self.G.train()
 
     def infer(self, nsamples):
         self.G.eval()
-        z = to_var(torch.randn(nsamples, self.G.z_dim))
-        return self.G(z)
+        z = torch.randn(nsamples, self.G.z_dim, device=self.device)
+        with torch.no_grad():
+            out = self.G(z)
+        self.G.train()
+        return out
 
     def denorm(self, x):
         # For fake data generated with tanh(x)
@@ -185,8 +194,6 @@ class Trainer:
              'D_scheduler' : self.D_scheduler.state_dict()},
             os.path.join(self.model_path, filename)
         )
-        np.save(os.path.join(self.model_path, 'd_losses'),np.array(self.d_losses))
-        np.save(os.path.join(self.model_path, 'g_losses'),np.array(self.g_losses))
 
     def load(self, filename):
         ckpt = torch.load(os.path.join(self.model_path, filename))
@@ -194,10 +201,6 @@ class Trainer:
         self.D.load_state_dict(ckpt['D'])
         self.G_optimizer.load_state_dict(ckpt['G_optimizer'])
         self.D_optimizer.load_state_dict(ckpt['D_optimizer'])
-        self.G_scheduler.load_state_dict(ckpt['G_scheduler'])
-        self.D_scheduler.load_state_dict(ckpt['D_scheduler'])
-
-        self.d_losses = list(np.load(os.path.join(self.model_path, 'd_losses.npy')))
-        self.g_losses = list(np.load(os.path.join(self.model_path, 'g_losses.npy')))
-        if self.args.inception_score:
-            self.inception_scores = list(np.load(os.path.join(self.model_path, 'inception_scores.npy')))
+        if self.lr_scheduler:
+            self.G_scheduler.load_state_dict(ckpt['G_scheduler'])
+            self.D_scheduler.load_state_dict(ckpt['D_scheduler'])

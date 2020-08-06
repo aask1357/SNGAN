@@ -59,10 +59,6 @@ class Inception:
         code from - https://github.com/sbarratt/inception-score-pytorch
         """
         N = len(imgs)
-        print(f'img shape : {N} x {imgs[0].shape}')
-        print(f'      min : {imgs[0].min()}')
-        print(f'      max : {imgs[0].max()}')
-        print(f'     mean : {imgs[0].mean()}')
 
         assert batch_size > 0
         assert N > batch_size, "{} <= {}".format(N, batch_size)

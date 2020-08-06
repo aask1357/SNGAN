@@ -86,3 +86,13 @@ class GenDataset(torch.utils.data.Dataset):
         # For fake data generated with tanh(x)
         x = (x + 1) / 2
         return x.clamp(0, 1)
+
+
+if __name__=="__main__":
+    train_loader, _ = get_loader(
+        dataset='CIFAR10',
+        root='/home/ash-arch/Documents/datasets/cifar10',
+        batch_size=64,
+        num_workers=8
+    )
+    print(len(train_loader))

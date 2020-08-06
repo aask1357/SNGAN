@@ -9,7 +9,6 @@ from PIL import Image
 from trainer import Trainer
 from discriminator import Discriminator
 from generator import Generator
-from logger import Logger
 
 
 def main(args, scope):
@@ -20,7 +19,11 @@ def main(args, scope):
     if args.mode == 'train':
         if args.verbose:
             trainer.show_current_model()
-        trainer.train()
+        try:
+            trainer.train()
+        finally:
+            if args.poweroff:
+                os.system('sudo poweroff')
     elif args.mode == 'sample':
         trainer.sample()
 
@@ -44,23 +47,25 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=int, default=2e-4)
-    parser.add_argument('--g_iter', type=int, default=1)
     parser.add_argument('--d_iter', type=int, default=5)
 
     # Misc
     parser.add_argument('--delete_old', action='store_true')
     parser.add_argument('--data_path', type=str, default='/home/ash-arch/Documents/datasets/cifar10')
     parser.add_argument('--log_path', type=str, default='./cifar10/logs')
+    parser.add_argument('--sample_path', type=str, default='./cifar10/samples')
     parser.add_argument('--model_path', type=str, default='./cifar10/models')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample'])
     parser.add_argument('--nsamples', type=int, default=64)
-    parser.add_argument('--inception_score', action='store_true')
 
     parser.add_argument('--log_step', type=int, default=100)
-    parser.add_argument('--sample_step', type=int, default=200)
+    parser.add_argument('--sample_step', type=int, default=1000)
     parser.add_argument('--save_step', type=int, default=200)
+    parser.add_argument('--inception_step', type=int, default=5, help='set 0 to not calculate inception score')
     parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda', 'gpu'])
+    parser.add_argument('--lr_scheduler', action='store_true')
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--poweroff', action='store_true')
     
 
     args = parser.parse_args()

@@ -65,7 +65,7 @@ class Trainer:
 
     def train(self):
         if self.step > 0:
-            self.load(f"{self.step:0>6}")
+            self.load(f"{self.step:0>7}")
         else:
             self.sample()
         
@@ -90,9 +90,9 @@ class Trainer:
                 self.writer.add_scalars("Inception Score", {"Std" : score_std}, self.step)
                 self.G.train()
         # save
-        self.save(f"{self.step:0>6}")
+        self.save(f"{self.step:0>7}")
         if self.args.delete_old and self.old_step > 0:
-            os.remove(f"{self.model_path}/{self.old_step:0>6}")
+            os.remove(f"{self.model_path}/{self.old_step:0>7}")
         self.old_step = self.step
     
     def train_epoch(self):
@@ -118,8 +118,8 @@ class Trainer:
             d_loss.backward()
             self.D_optimizer.step()
             self.writer.add_scalars('D_loss', {"D" :d_loss.item()}, self.step)
-            self.writer.add_scalars('D_loss', {"D_real" : d_loss.item()}, self.step)
-            self.writer.add_scalars('D_loss', {"D_fake" : d_loss.item()}, self.step)
+            self.writer.add_scalars('D_loss', {"D_real" : d_loss_real.item()}, self.step)
+            self.writer.add_scalars('D_loss', {"D_fake" : d_loss_fake.item()}, self.step)
             loss_dict['d_loss_real'] += d_loss_real.item()
             loss_dict['d_loss_fake'] += d_loss_fake.item()
             loss_dict['d_loss'] += d_loss.item()
@@ -146,9 +146,9 @@ class Trainer:
                         
             # save
             if self.step % self.args.save_step == 0:
-                self.save(f"{self.step:0>6}")
+                self.save(f"{self.step:0>7}")
                 if self.args.delete_old and self.old_step > 0:
-                    os.remove(f"{self.model_path}/{self.old_step:0>6}")
+                    os.remove(f"{self.model_path}/{self.old_step:0>7}")
                 self.old_step = self.step
         loss_dict["d_loss_real"] /= len(self.train_loader)
         loss_dict["d_loss_fake"] /= len(self.train_loader)

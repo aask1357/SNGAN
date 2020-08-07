@@ -38,7 +38,6 @@ class Discriminator(nn.Module):
 
 def test_discriminator():
     class Args:
-        sn = True
         ndf = 512
         m_g = 4
     args = Args()

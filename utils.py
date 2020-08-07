@@ -5,22 +5,54 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import numpy as np
 from scipy.stats import entropy
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
 
 
-def to_var(x):
-    """
-        x: torch Tensor
-    """
-    if torch.cuda.is_available():
-        x = x.cuda()
-    return Variable(x)
+def dataloader(dataset, root, batch_size, num_workers, train):
+    data = getattr(datasets, dataset)(
+        root=root, train=train, download=True,
+        transform=transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]),
+    )
+
+    return torch.utils.data.DataLoader(data,
+        shuffle=True, batch_size=batch_size,
+        num_workers=num_workers, pin_memory=True)
 
 
-def to_np(x):
-    """
-        x: torch Variable
-    """
-    return x.data.cpu().numpy()
+class GenLoader:
+    def __init__(self, G, n_data, batch_size, device):
+        assert batch_size > 0
+        assert n_data >= batch_size, f"n_data({n_data}) < batch_size({batch_size})"
+        self.G = G
+        self.z_dim = G.z_dim
+        self.device = device
+        self.n_data = n_data
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        self.index = 0
+        return self
+ 
+    def __next__(self):
+        if self.index >= self.n_data:
+            raise StopIteration
+        
+        if self.index + self.batch_size > self.n_data:
+            bs = self.n_data - self.index
+        else:
+            bs = self.batch_size
+        self.index += self.batch_size
+        
+        with torch.no_grad():
+            z = torch.randn(bs, self.z_dim, device=self.device)
+            x = self.G(z).clamp(-1, 1)#.permute(0, 2, 3, 1)
+        return x
+    
+    def __len__(self):
+        return (self.n_data - 1) // self.batch_size + 1
 
 
 def init_params(m):
@@ -38,58 +70,39 @@ def print_network(net):
 
 
 class Inception:
-    def __init__(self, cuda=True):
-        if cuda:
-            self.dtype = torch.cuda.FloatTensor
-        else:
-            self.dtype = torch.FloatTensor
-        self.inception_model = inception_v3(pretrained=True, transform_input=False).type(self.dtype)
+    def __init__(self, dataloader, device):
+        self.device = device
+        self.dataloader = dataloader
+        self.n_data = dataloader.n_data
+        self.inception_model = inception_v3(pretrained=True, transform_input=False).to(self.device)
         self.inception_model.eval()
         
-        self.up = nn.Upsample(size=(299, 299), mode='bilinear', align_corners=False).type(self.dtype)
+        self.up = nn.Upsample(size=(299, 299), mode='bilinear', align_corners=False).to(self.device)
         
 
-    def inception_score(self, imgs, batch_size=32, resize=False, splits=10):
-        """Computes the inception score of the generated images imgs
-        imgs -- Torch dataset of (3xHxW) numpy images normalized in the range [0, 1]
-        cuda -- whether or not to run on GPU
-        batch_size -- batch size for feeding into Inception v3
-        splits -- number of splits
-
-        code from - https://github.com/sbarratt/inception-score-pytorch
-        """
-        N = len(imgs)
-
-        assert batch_size > 0
-        assert N > batch_size, "{} <= {}".format(N, batch_size)
-
-        # Set up dataloader
-        dataloader = torch.utils.data.DataLoader(imgs, batch_size=batch_size)
-
-        # Load inception model
-        def get_pred(x):
-            if resize:
-                x = self.up(x)
-            x = self.inception_model(x)
-            return F.softmax(x, dim=1).data.cpu().numpy()
-
+    def inception_score(self, resize=True, splits=10):
+        # code from - https://github.com/sbarratt/inception-score-pytorch
         # Get predictions
-        preds = np.zeros((N, 1000))
+        preds = np.zeros((self.n_data, 1000))
         with torch.no_grad():
-            for i, batch in enumerate(dataloader, 0):
-                batch = batch.type(self.dtype)
-                batchv = to_var(batch)
-                batch_size_i = batch.size()[0]
+            i = 0
+            for x in self.dataloader:
+                batch_size = x.shape[0]
+                if resize:
+                    x = self.up(x)
+                x = self.inception_model(x)
+                x = F.softmax(x, dim=1).data.cpu().numpy()
 
-                preds[i*batch_size:i*batch_size + batch_size_i] = get_pred(batchv)
-        del batch, batchv, batch_size_i
+                preds[i:i + batch_size] = x
+                i += batch_size
+        del x
         torch.cuda.empty_cache()
-
+        
         # Now compute the mean kl-div
         split_scores = []
 
         for k in range(splits):
-            part = preds[k * (N // splits): (k+1) * (N // splits), :]
+            part = preds[k * (self.n_data // splits): (k+1) * (self.n_data // splits), :]
             py = np.mean(part, axis=0)
             scores = []
             for i in range(part.shape[0]):
@@ -101,28 +114,37 @@ class Inception:
 
 
 if __name__ == '__main__':
-    class IgnoreLabelDataset(torch.utils.data.Dataset):
-        def __init__(self, orig):
-            self.orig = orig
+    if torch.cuda.is_available():
+        device = 'cuda'
+        torch.backends.cudnn.enabled = True
+        torch.backends.cudnn.benchmark = True
+    else:
+        device = 'cpu'
+    
+    class IgnoreLabelLoader():
+        def __init__(self, dataloader):
+            self.dataloader = dataloader
+            self.n_data = len(dataloader.dataset)
 
-        def __getitem__(self, index):
-            return self.orig[index][0]
-
-        def __len__(self):
-            return len(self.orig)
-
-    import torchvision.datasets as dset
-    import torchvision.transforms as transforms
-
-    cifar = dset.CIFAR10(root='data/', download=True,
-        transform=transforms.Compose([
-        transforms.Resize(32),
-        transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ])
+        def __iter__(self):
+            self.iterator = iter(self.dataloader)
+            return self
+        
+        def __next__(self):
+            try:
+                x, _ = next(self.iterator)
+                return x.to(device)
+            except StopIteration:
+                raise StopIteration
+    
+    dataloader = dataloader(
+        dataset='CIFAR10',
+        root='/home/ash-arch/Documents/datasets/cifar10',
+        batch_size=64,num_workers=4,train=True
     )
+    dataloader = IgnoreLabelLoader(dataloader)
 
-    IgnoreLabelDataset(cifar)
+    model = Inception(dataloader=dataloader, device=device)
 
     print ("Calculating Inception Score...")
-    print (inception_score(IgnoreLabelDataset(cifar), cuda=True, batch_size=32, resize=True, splits=10))
+    print (model.inception_score(resize=True, splits=10))

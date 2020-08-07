@@ -3,11 +3,11 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.optim as optim
 import torchvision.transforms as transforms
 
-from dataloader import get_loader, GenDataset
 from logger import Logger
 from utils import *
 from tensorboardX import SummaryWriter
@@ -16,13 +16,18 @@ torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+def hinge_loss_d(real, fake):
+    t1, t2 = F.relu(1.0-real), F.relu(1.0+fake)
+    return torch.mean(t1) + torch.mean(t2)
+
 class Trainer:
     def __init__(self, G, D, args):
-        self.train_loader, _ = get_loader(
+        self.train_loader = dataloader(
             dataset=args.dataset,
             root=args.data_path,
             batch_size=args.batch_size,
-            num_workers=args.workers
+            num_workers=args.workers,
+            train=True
         )
         self.G = G
         self.D = D
@@ -32,7 +37,7 @@ class Trainer:
         self.nsamples = args.nsamples
         self.d_iter = args.d_iter
 
-        self.logger = Logger(args.log_path, args.sample_path)
+        self.logger = Logger(args.log_path, args.sample_path, args.load_step)
         self.writer = SummaryWriter(args.log_path)
         self.model_path = args.model_path
 
@@ -54,14 +59,15 @@ class Trainer:
         self.D_scheduler = optim.lr_scheduler.ExponentialLR(self.D_optimizer, gamma=0.99)
         self.lr_scheduler = args.lr_scheduler
 
-        self.criterion = nn.BCEWithLogitsLoss()
+        self.hinge_loss = True if args.hinge_loss else False
 
         self.G.apply(init_params)
         self.D.apply(init_params)
         self.fixed_z = torch.randn(self.nsamples, self.G.z_dim).to(self.device)
 
         if args.inception_step:
-            self.inception_model = Inception(cuda=cuda)
+            g_loader = GenLoader(self.G, 50000, args.batch_size, self.device)
+            self.inception_model = Inception(g_loader, self.device)
 
     def train(self):
         if self.step > 0:
@@ -84,7 +90,7 @@ class Trainer:
             if self.args.inception_step and self.epoch % self.args.inception_step == 0:
                 self.G.eval()
                 self.logger('calculating inception score...')
-                score_mean, score_std = self.inception_model.inception_score(GenDataset(self.G, 50000), self.batch_size, True)
+                score_mean, score_std = self.inception_model.inception_score()
                 self.logger(f"Inception score at epoch {self.epoch} with 50000 generated samples - Mean: {score_mean:.3f}, Std: {score_std:.3f}")
                 self.writer.add_scalars("Inception Score", {"Mean" : score_mean}, self.step)
                 self.writer.add_scalars("Inception Score", {"Std" : score_std}, self.step)
@@ -97,25 +103,33 @@ class Trainer:
     
     def train_epoch(self):
         loss_dict = {'d_loss_real': 0.0, 'd_loss_fake': 0.0, 'd_loss': 0.0, 'g_loss': 0.0}
-        for i, (real_imgs, real_labels) in enumerate(self.train_loader):
+        for i, (real_imgs, _) in enumerate(self.train_loader):
             self.step += 1
             real_imgs = real_imgs.to(self.device)
-            real_labels = torch.ones_like(real_labels, dtype=torch.float32, device=self.device)
-            fake_labels = torch.zeros_like(real_labels)
+            # real_labels = torch.ones_like(real_labels, dtype=torch.float32, device=self.device)
+            # fake_labels = torch.zeros_like(real_labels)
             z = torch.randn(self.batch_size, self.G.z_dim, device=self.device)
 
             # Discriminator
-            # D = argmax{ E[logD(x)] + E[log(1-D(G(z)))] }
+            # minimize -E[f(x)] + E[f(G(z))]
+            # E[max(0, 1-f(x))] + E[max(0, 1+f(g(z)))] : hinge loss
             self.D.zero_grad()
-
-            d_loss_real = self.criterion(self.D(real_imgs), real_labels)
 
             with torch.no_grad():
                 fake_imgs = self.G(z)
-            d_loss_fake = self.criterion(self.D(fake_imgs), fake_labels)
+            d_real = self.D(real_imgs)
+            d_fake = self.D(fake_imgs)
+
+            if self.hinge_loss:
+                d_real, d_fake = F.relu(1.0 - d_real), F.relu(1.0 + d_fake)
+            else:
+                d_real = -d_real
+            d_loss_real = torch.mean(d_real)
+            d_loss_fake = torch.mean(d_fake)
 
             d_loss = d_loss_real + d_loss_fake
             d_loss.backward()
+
             self.D_optimizer.step()
             self.writer.add_scalars('D_loss', {"D" :d_loss.item()}, self.step)
             self.writer.add_scalars('D_loss', {"D_real" : d_loss_real.item()}, self.step)
@@ -125,20 +139,20 @@ class Trainer:
             loss_dict['d_loss'] += d_loss.item()
 
             # Generator
-            # G = argmax{ E[log(D(G(z)))] } (instead of argmin{ E[log(1-D(G(z)))] })
+            # minimize -E[f(g(z))]
             if self.step % self.d_iter == 0:
                 self.G.zero_grad()
                 fake_imgs = self.G(z)
 
-                g_loss = self.criterion(self.D(fake_imgs), real_labels)
+                g_loss = -torch.mean(self.D(fake_imgs))
                 g_loss.backward()
                 self.G_optimizer.step()
                 self.writer.add_scalar('G_loss', g_loss.item(), self.step)
                 loss_dict['g_loss'] += g_loss.item()
 
             # log
-            if self.step % self.args.log_step == 0:
-                self.logger(f'step: {self.step}, d_loss: {to_np(d_loss):.5f}, g_loss: {to_np(g_loss):.5f}')
+            if self.args.log_step !=0 and self.step % self.args.log_step == 0:
+                self.logger(f'step: {self.step}, d_loss: {d_loss.item():.5f}, g_loss: {g_loss.item():.5f}')
             # sample image
             if self.step % self.args.sample_step == 0:
                 samples = self.denorm(self.infer(self.nsamples))
@@ -150,6 +164,7 @@ class Trainer:
                 if self.args.delete_old and self.old_step > 0:
                     os.remove(f"{self.model_path}/{self.old_step:0>7}")
                 self.old_step = self.step
+            break
         loss_dict["d_loss_real"] /= len(self.train_loader)
         loss_dict["d_loss_fake"] /= len(self.train_loader)
         loss_dict["d_loss"] /= len(self.train_loader)
